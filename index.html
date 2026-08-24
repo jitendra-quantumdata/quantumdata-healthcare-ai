@@ -27,15 +27,25 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:11px 8px;
 <script>
 /* QuantumData Industry Intelligence Engine v2 — deterministic, dataset-grounded, executive-safe */
 const DATA={"name":"Healthcare","columns":["Department","Patients","Occupancy %","Avg LOS","Readmit %","Status"],"rows":[["Emergency","2184","94.2","1.1","7.8","Watch"],["Cardiology","1426","91.6","4.8","5.2","Stable"],["Orthopedics","1108","86.3","5.1","6.4","Stable"],["Oncology","892","89.7","6.2","4.8","Strong"],["General Medicine","2764","83.5","4.0","7.1","Watch"]],"trends":[["Mon",74],["Tue",79],["Wed",82],["Thu",85],["Fri",88],["Sat",84]],"mix":[["Emergency",24],["General",29],["Specialty",31],["Other",16]]};
-const CONFIG={"name": "Healthcare", "qdl": "QDL-AI-002", "entity": "Department", "beneficial": ["patients", "occupancy"], "adverse": ["los", "readmit", "wait"], "aliases": {"patients": ["patients", "patient", "visits", "volume"], "occupancy": ["occupancy", "beds"], "los": ["los", "length of stay", "stay"], "readmit": ["readmit", "readmission"], "wait": ["wait", "waiting", "er"]}, "focus": "patient flow, capacity, length of stay and readmission"};
+const CONFIG={"name": "Healthcare", "qdl": "QDL-AI-002", "entity": "Department", "beneficial": ["patients", "occupancy"], "adverse": ["los", "readmit", "wait"], "aliases": {"patients": ["patients", "patient", "visits", "volume", "admissions", "admission", "patient volume"], "occupancy": ["occupancy", "occupancy rate", "bed occupancy", "bed utilization", "beds"], "los": ["los", "length of stay", "average length of stay", "avg los", "stay"], "readmit": ["readmit", "readmission", "readmission rate", "readmit rate"], "wait": ["wait", "waiting", "er"]}, "focus": "patient flow, capacity, length of stay and readmission"};
+
+
+
+
+/* QuantumData Industry Intelligence Engine v6 — deterministic, dataset-grounded, intent-first */
 function esc(v){return String(v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function num(v){const n=parseFloat(String(v).replace(/,/g,''));return Number.isFinite(n)?n:null}
-function norm(v){return String(v).toLowerCase().replace(/[%₹$€,]/g,' ').replace(/[^a-z0-9.]+/g,' ').replace(/\s+/g,' ').trim()}
-const STATUS_IDX=DATA.columns.findIndex(c=>/status|signal|health|condition/i.test(c));
+function norm(v){return String(v).toLowerCase().replace(/[₹$€,]/g,' ').replace(/%/g,' percent ').replace(/[^a-z0-9.]+/g,' ').replace(/\s+/g,' ').trim()}
 const ENTITY_IDX=0;
-function metricDefs(){return DATA.columns.map((label,i)=>({label,i,aliases:Object.values(CONFIG.aliases||{}).flat().concat([label]),values:DATA.rows.map(r=>num(r[i])).filter(v=>v!==null)})).filter(m=>m.i!==ENTITY_IDX&&m.values.length>=2)}
-const METRICS=metricDefs();
-function metricFor(t){let best=null,score=0;for(const m of METRICS){for(const a of m.aliases){const aa=norm(a);if(aa&&t.includes(aa)&&aa.length>score){score=aa.length;best=m}}}return best}
+const ENTITY_LABEL=DATA.columns[ENTITY_IDX]||CONFIG.entity||'Entity';
+const STATUS_IDX=DATA.columns.findIndex(c=>/status|signal|health|condition/i.test(c));
+const NUMERIC_COLS=DATA.columns.map((label,i)=>({label,i,values:DATA.rows.map(r=>num(r[i])).filter(v=>v!==null)})).filter(x=>x.i!==ENTITY_IDX&&x.values.length>=2);
+const CATEGORICAL_COLS=DATA.columns.map((label,i)=>({label,i,values:[...new Set(DATA.rows.map(r=>String(r[i]).trim()).filter(Boolean))],numericCount:DATA.rows.map(r=>num(r[i])).filter(v=>v!==null).length})).filter(x=>x.i!==ENTITY_IDX&&x.numericCount<DATA.rows.length);
+function aliasesForColumn(label){const defs=CONFIG.aliases||{};const out=[label];for(const [k,vals] of Object.entries(defs)){const nk=norm(k),nl=norm(label);if(nl===nk||nl.includes(nk)||nk.includes(nl.split(' ')[0]))out.push(...(vals||[]))}return [...new Set(out)]}
+const METRICS=NUMERIC_COLS.map(m=>({...m,aliases:aliasesForColumn(m.label)}));
+function wordHit(t,a){const aa=norm(a);return aa&&new RegExp('(^|\\s)'+aa.replace(/[.*+?^${}()|[\\]\\]/g,'\\$&')+'(\\s|$)','i').test(t)}
+function metricFor(t){let best=null,score=0;for(const m of METRICS){for(const a of m.aliases){const aa=norm(a);if(wordHit(t,aa)&&aa.length>score){score=aa.length;best=m}}}return best}
+function metricsMentioned(t){const catLabels=CATEGORICAL_COLS.map(c=>norm(c.label));return METRICS.filter(m=>m.aliases.some(a=>{const aa=norm(a);if(catLabels.includes(aa)&&categoryColumnFor(t)?.label&&norm(categoryColumnFor(t).label)===aa)return false;return wordHit(t,aa)})).sort((a,b)=>b.aliases.map(norm).sort((x,y)=>y.length-x.length)[0].length-a.aliases.map(norm).sort((x,y)=>y.length-x.length)[0].length)}
 function allNumeric(m,rows=DATA.rows){return rows.map(r=>num(r[m.i])).filter(v=>v!==null)}
 function avg(m,rows=DATA.rows){const v=allNumeric(m,rows);return v.length?v.reduce((a,b)=>a+b,0)/v.length:null}
 function fmt(v){return typeof v==='number'?(Number.isInteger(v)?String(v):v.toFixed(1)):String(v)}
@@ -43,59 +53,232 @@ function summary(r){return METRICS.map(m=>{const v=num(r[m.i]);return v===null?n
 function statusText(r){return STATUS_IDX>=0?String(r[STATUS_IDX]):''}
 function isFlagged(r){return /watch|risk|alert|critical|concern|weak/i.test(statusText(r))}
 function badDirection(m){const l=norm(m.label);if((CONFIG.adverse||[]).some(a=>(CONFIG.aliases?.[a]||[]).some(x=>l.includes(norm(x)))||l.includes(norm(a))))return 'high';if(/risk|loss|defect|downtime|delay|wait|readmit|npl|var|claims/i.test(l))return 'high';return 'low'}
-function deviation(m,r){const v=num(r[m.i]),a=avg(m);if(v===null||a===null)return 0;const vals=allNumeric(m),range=Math.max(...vals)-Math.min(...vals)||1;return badDirection(m)==='high'?(v-a)/range:(a-v)/range}
-function concernScore(r){let s=isFlagged(r)?2:0;for(const m of METRICS)s+=Math.max(0,deviation(m,r));return s}
-function ranked(rows=DATA.rows){return [...rows].sort((a,b)=>concernScore(b)-concernScore(a))}
+function deviation(m,r,rows=DATA.rows){const v=num(r[m.i]),a=avg(m,rows);if(v===null||a===null)return 0;const vals=allNumeric(m,rows),range=Math.max(...vals)-Math.min(...vals)||1;return badDirection(m)==='high'?(v-a)/range:(a-v)/range}
+function concernScore(r,rows=DATA.rows){let s=isFlagged(r)?2:0;for(const m of METRICS)s+=Math.max(0,deviation(m,r,rows));return s}
+function ranked(rows=DATA.rows){return [...rows].sort((a,b)=>concernScore(b,rows)-concernScore(a,rows))}
 function strongest(m,rows=DATA.rows){return [...rows].filter(r=>num(r[m.i])!==null).sort((a,b)=>badDirection(m)==='high'?num(a[m.i])-num(b[m.i]):num(b[m.i])-num(a[m.i]))[0]}
 function weakest(m,rows=DATA.rows){return [...rows].filter(r=>num(r[m.i])!==null).sort((a,b)=>badDirection(m)==='high'?num(b[m.i])-num(a[m.i]):num(a[m.i])-num(b[m.i]))[0]}
-function render(){const s=document.getElementById('status')?.value||'All',u=document.getElementById('unit')?.value||'All',tb=document.getElementById('tbody');if(!tb)return;tb.innerHTML=DATA.rows.filter(r=>(s==='All'||String(r[STATUS_IDX])===s)&&(u==='All'||String(r[ENTITY_IDX])===u)).map(r=>'<tr>'+r.map(x=>'<td>'+esc(x)+'</td>').join('')+'</tr>').join('')}
-function runAnalysis(){render();const n=document.querySelectorAll('#tbody tr').length,a=document.getElementById('analysis');if(a)a.textContent=n?`Analysis complete: ${n} matching records. Review flagged signals first, then use Ask AI for deeper analysis.`:'No records match the selected filters.'}
-function drawChart(id,labels,vals,donut){const c=document.getElementById(id);if(!c)return;const ctx=c.getContext('2d');const w=c.clientWidth||500,h=c.clientHeight||260;c.width=w*2;c.height=h*2;ctx.scale(2,2);ctx.clearRect(0,0,w,h);if(!vals?.length)return;if(donut){let total=vals.reduce((a,b)=>a+b,0)||1,s=-Math.PI/2;vals.forEach((v,i)=>{let e=s+2*Math.PI*v/total;ctx.beginPath();ctx.moveTo(w/2,h/2);ctx.arc(w/2,h/2,Math.min(w,h)*.32,s,e);ctx.fillStyle=['#142653','#118b83','#6e8db7','#8cb7b1','#9da9bf'][i%5];ctx.fill();s=e});ctx.globalCompositeOperation='destination-out';ctx.beginPath();ctx.arc(w/2,h/2,Math.min(w,h)*.16,0,Math.PI*2);ctx.fill();ctx.globalCompositeOperation='source-over';return}let p=28,max=Math.max(...vals)*1.15||1;ctx.strokeStyle='#dfe6ef';for(let i=0;i<5;i++){let y=p+(h-2*p)*i/4;ctx.beginPath();ctx.moveTo(p,y);ctx.lineTo(w-p,y);ctx.stroke()}ctx.strokeStyle='#118b83';ctx.lineWidth=3;ctx.beginPath();vals.forEach((v,i)=>{let x=p+(w-2*p)*i/(vals.length-1||1),y=h-p-(h-2*p)*v/max;i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke()}
-function charts(){drawChart('trend',(DATA.trends||[]).map(x=>x[0]),(DATA.trends||[]).map(x=>num(x[1])??0),false);drawChart('mix',(DATA.mix||[]).map(x=>x[0]),(DATA.mix||[]).map(x=>num(x[1])??0),true)}
-function riskAnalysis(rows){const r=ranked(rows),top=r.slice(0,3);return `<b>Risk assessment:</b><br>• <b>${esc(top[0]?.[0]||'Primary area')}</b> is the strongest visible concern in this synthetic dataset.${top[0]?` ${summary(top[0])}.`:''}<br>• Secondary concern: <b>${esc(top[1]?.[0]||'—')}</b>.${top[1]?` ${summary(top[1])}.`:''}<br><br>These are data-visible operational signals only; the dataset does not establish root cause or live production risk.`}
-function managementAnalysis(rows,leadership=false){const r=ranked(rows),top=r[0];if(!top)return 'No matching synthetic records are available.';return leadership?`<b>Leadership view:</b> the primary strategic concern is <b>${esc(top[0])}</b>, based on the strongest combination of flagged status and adverse metric deviation. ${summary(top)}.<br><br>Leadership should validate the underlying drivers, exposure and persistence before taking operational action.`:`<b>Management focus:</b> review <b>${esc(top[0])}</b> first. ${summary(top)}.<br><br>Next, investigate the metric drivers and confirm whether the signal is persistent or isolated.`}
-function weaknessAnalysis(rows){const items=[];for(const m of METRICS){const w=weakest(m,rows);if(w)items.push(`<b>${esc(m.label)}</b>: ${esc(w[0])} at <b>${fmt(num(w[m.i]))}</b>`)}return `<b>Visible weaknesses:</b><br>${items.slice(0,4).map(x=>'• '+x).join('<br>')}<br><br>These are relative performance gaps in the synthetic dataset, not causal findings.`}
-function impactAnalysis(rows){const items=METRICS.map(m=>{const w=weakest(m,rows),a=avg(m,rows);return w&&a!==null?{m,w,a,g:Math.abs(num(w[m.i])-a)}:null}).filter(Boolean).sort((a,b)=>b.g-a.g).slice(0,3);return `<b>Factors that could impact operational performance:</b><br>${items.map(x=>`• ${esc(x.m.label)} — ${esc(x.w[0])} shows the largest visible deviation from the dataset average at <b>${fmt(num(x.w[x.m.i]))}</b> vs average <b>${fmt(x.a)}</b>.`).join('<br>')}`}
-function executiveSummary(rows){const r=ranked(rows),top=r[0],best=METRICS.map(m=>{const x=strongest(m,rows);return x?`${esc(m.label)}: ${esc(x[0])}`:null}).filter(Boolean).slice(0,3);return `<b>Executive summary — ${esc(DATA.name)}:</b><br>• The strongest current concern is <b>${esc(top?.[0]||'not established')}</b> based on the synthetic operating signals.<br>• Key operating indicators: ${METRICS.slice(0,4).map(m=>`${esc(m.label)} avg <b>${fmt(avg(m,rows))}</b>`).join(' · ')}.<br>• Stronger-performing areas include ${best.join('; ')||'not established'}.<br>• Management implication: prioritize validation of the most adverse visible signal before broader intervention.<br><br><i>All conclusions are based only on synthetic demonstration data.</i>`}
+function numericExtreme(m,rows,wantMax){return [...rows].filter(r=>num(r[m.i])!==null).sort((a,b)=>wantMax?num(b[m.i])-num(a[m.i]):num(a[m.i])-num(b[m.i]))[0]}
+function rankingChoice(t,m,rows){if(/\b(best|strongest)\b/.test(t))return strongest(m,rows);if(/\b(weakest|worst)\b/.test(t))return weakest(m,rows);if(/\b(lowest|least|smallest|minimum|min)\b/.test(t))return numericExtreme(m,rows,false);return numericExtreme(m,rows,true)}
+function distinctValues(idx,rows=DATA.rows){return [...new Set(rows.map(r=>String(r[idx]).trim()).filter(Boolean))]}
+function entityRows(rows=DATA.rows){return rows.map(r=>String(r[ENTITY_IDX]).trim()).filter(Boolean)}
+function entityMention(t,rows=DATA.rows){const sorted=[...rows].sort((a,b)=>norm(b[ENTITY_IDX]).length-norm(a[ENTITY_IDX]).length);return sorted.find(r=>wordHit(t,norm(r[ENTITY_IDX]))||t.includes(norm(r[ENTITY_IDX])))||null}
+function categoryColumnFor(t){let best=null,score=0;for(const c of CATEGORICAL_COLS){const label=norm(c.label);const aliases=[label,label.endsWith('s')?label.slice(0,-1):label+'s'];if(/status|signal|health|condition|state/.test(label))aliases.push('status','statuses','signal','signals','health','condition','conditions','state','states');if(/type/.test(label))aliases.push('type','types','category','categories','kind','kinds');if(/risk/.test(label))aliases.push('risk','risks','risk level','risk levels');for(const a of aliases){const aa=norm(a);if(aa&&(t===aa||t.includes(aa))&&aa.length>score){score=aa.length;best=c}}}return best}
+function categoryMatch(t){let c=categoryColumnFor(t);if(c){const ordered=[...c.values].sort((a,b)=>norm(b).length-norm(a).length);for(const v of ordered){const nv=norm(v);if(nv&&wordHit(t,nv))return {idx:c.i,label:c.label,value:v,values:c.values}}return {idx:c.i,label:c.label,value:null,values:c.values}}for(const candidate of CATEGORICAL_COLS){const ordered=[...candidate.values].sort((a,b)=>norm(b).length-norm(a).length);for(const v of ordered){const nv=norm(v);if(nv&&wordHit(t,nv))return {idx:candidate.i,label:candidate.label,value:v,values:candidate.values}}}return null}
+function requestedCategoryColumn(t){const c=categoryColumnFor(t);if(c)return c;const m=t.match(/\b(?:what|which|show|tell|give)\b.*?\b(?:risk|status|signal|health|condition|type|category|kind)\b/i);if(m){const wanted=norm(m[0]).match(/risk|status|signal|health|condition|type|category|kind/)?.[0];if(wanted){return CATEGORICAL_COLS.find(x=>norm(x.label)===wanted)||null}}return null}
+function explicitCategoryFilter(t,rows){const c=categoryMatch(t);if(!c||!c.value)return null;const rs=rows.filter(r=>norm(r[c.idx])===norm(c.value));return rs.length?{label:c.label,value:c.value,rows:rs}:null}
+function explicitMetricCondition(t,rows){
+  for(const m of METRICS){
+    const aliases=m.aliases.map(norm).sort((a,b)=>b.length-a.length);
+    for(const a of aliases){
+      const safe=a.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+      const patterns=[
+        new RegExp('(?:where|with|having|whose|which|that)?\\s*'+safe+'\\s*(?:is|are|equals|equal to)?\\s*(above|over|more than|greater than|below|under|less than|fewer than|at least|at most|=|>=|<=|>|<)\\s*(\\d+(?:\\.\\d+)?)','i'),
+        new RegExp('(?:where|with|having|whose|which|that)?\\s*'+safe+'\\s*(?:=|is|are|equals|equal to|of)?\\s*(\\d+(?:\\.\\d+)?)','i'),
+        new RegExp('(\\d+(?:\\.\\d+)?)\\s*'+safe,'i')
+      ];
+      for(const re of patterns){
+        const hit=t.match(re);
+        if(!hit)continue;
+        let target, op='=';
+        if(hit.length>=3 && isNaN(Number(hit[1]))){
+          const phrase=norm(hit[1]);
+          target=Number(hit[2]);
+          if(/^(above|over|more than|greater than)$/.test(phrase))op='>';
+          else if(/^(below|under|less than|fewer than)$/.test(phrase))op='<';
+          else if(phrase==='at least'||phrase==='>=')op='>=';
+          else if(phrase==='at most'||phrase==='<=')op='<=';
+          else if(phrase==='>')op='>';
+          else if(phrase==='<')op='<';
+          else op=phrase||'=';
+        } else {
+          target=Number(hit[1]);
+          const phrase=hit[0].match(/>=|<=|>|</)?.[0];
+          if(phrase)op=phrase;
+        }
+        if(!Number.isFinite(target))continue;
+        const rs=rows.filter(r=>{
+          const v=num(r[m.i]);if(v===null)return false;
+          if(op==='>')return v>target;
+          if(op==='>=')return v>=target;
+          if(op==='<')return v<target;
+          if(op==='<=')return v<=target;
+          return Math.abs(v-target)<1e-9;
+        });
+        if(rs.length)return {metric:m,target,operator:op,rows:rs};
+      }
+    }
+  }
+  return null;
+}
+function filterByConditions(t,rows){return explicitCategoryFilter(t,rows)||explicitMetricCondition(t,rows)}
+function wantsAll(t){return /\b(all|every|each|list|available)\b/.test(t)}
+function entityListRequested(t){const e=norm(ENTITY_LABEL);const plural=e.endsWith('s')?e:e+'s';return new RegExp('\\b('+e+'|'+plural+')\\b').test(t)&&/\b(all|every|each|list|available|what|which|show|tell|name)\b/.test(t)}
+function entityWiseRequested(t){
+  const e=norm(ENTITY_LABEL);
+  const plural=e.endsWith('s')?e:e+'s';
+  return /\b(?:department|departments|unit|units)\s*(?:wise|by)\b/.test(t)
+    || /\b(?:wise|by)\s*(?:department|departments|unit|units)\b/.test(t)
+    || /\b(?:for|across)\s+(?:each|all|every)\s+(?:department|departments|unit|units)\b/.test(t)
+    || /\b(?:department|departments|unit|units)\b/.test(t) && /\b(?:each|all|every)\b/.test(t);
+}
+function entityWiseList(t,rows){
+  if(!entityWiseRequested(t))return null;
+  const ms=metricsMentioned(t);
+  if(ms.length===1){
+    const m=ms[0];
+    return `<b>${esc(m.label)} by ${esc(ENTITY_LABEL.toLowerCase())}:</b><br>${rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${fmt(num(r[m.i]))}`).join('<br>')}`;
+  }
+  const cat=requestedCategoryColumn(t)||categoryColumnFor(t);
+  if(cat){
+    return `<b>${esc(cat.label)} by ${esc(ENTITY_LABEL.toLowerCase())}:</b><br>${rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${esc(r[cat.i])}`).join('<br>')}`;
+  }
+  return `<b>${esc(ENTITY_LABEL)}-wise view:</b><br>${rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${summary(r)}`).join('<br>')}`;
+}
+function countQuery(t,rows){
+  if(!/\bhow many\b|\bnumber of\b|\bcount of\b/.test(t))return null;
+  // Let department-wise and condition-based questions reach their dedicated handlers.
+  if(entityWiseRequested(t) || filterByConditions(t,rows))return null;
+  const ent=entityMention(t,rows), ms=metricsMentioned(t);
+  if(ent&&ms.length===1)return `<b>${esc(ms[0].label)} for ${esc(ent[ENTITY_IDX])}:</b> <b>${fmt(num(ent[ms[0].i]))}</b>.`;
+  if(/\bhow many\b.*\b(records?|rows?)\b/.test(t)||/\bhow many\b.*\b(airports?|plants?|stores?|units?|assets?|portfolios?|departments?|lines?|branches?|sites?)\b/.test(t)){
+    return `<b>Number of ${esc(ENTITY_LABEL.toLowerCase())} records:</b> <b>${rows.length}</b>.`;
+  }
+  const m=ms[0]||metricFor(t);
+  if(m&&/\bhow many\b/.test(t)){
+    const total=allNumeric(m,rows).reduce((a,b)=>a+b,0);
+    return `<b>Total ${esc(m.label)}:</b> <b>${fmt(total)}</b> across <b>${rows.length}</b> ${esc(ENTITY_LABEL.toLowerCase())} records.`;
+  }
+  return null;
+}
+function listAll(t,rows){
+  if(!wantsAll(t))return null;
+  const filtered=filterByConditions(t,rows);
+  if(filtered){
+    const op=filtered.operator&&filtered.operator!=='='?` ${filtered.operator} ${fmt(filtered.target)}`:` = ${filtered.metric?fmt(filtered.target):esc(filtered.value)}`;
+    return `<b>${esc(filtered.metric?.label||filtered.label)}${op}:</b> ${filtered.rows.map(r=>`<b>${esc(r[ENTITY_IDX])}</b>`).join(', ')}.`;
+  }
+  const ms=metricsMentioned(t);
+  if(ms.length===1)return `<b>${esc(ms[0].label)} for all ${esc(ENTITY_LABEL.toLowerCase())}s:</b><br>${rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${fmt(num(r[ms[0].i]))}`).join('<br>')}`;
+  if(entityListRequested(t))return `<b>${esc(ENTITY_LABEL)}s:</b> ${entityRows(rows).map(esc).join(' · ')}.`;
+  const cat=categoryMatch(t);if(cat&&cat.value===null)return `<b>${esc(cat.label)} values:</b> ${distinctValues(cat.idx,rows).map(esc).join(' · ')}.`;
+  return null;
+}
+function unknownEntity(t,rows){
+  // Do not interpret condition phrases such as "where readmit is above 4.8" as unknown department names.
+  if(/\b(where|with|having|whose)\b.*\b(above|over|more than|greater than|below|under|less than|fewer than|at least|at most|=|>=|<=|>|<)\b/.test(t))return null;
+
+  const cues=[/\bfrom\s+([a-z][a-z0-9 .-]{2,})$/i,/\bat\s+([a-z][a-z0-9 .-]{2,})$/i,/\bin\s+([a-z][a-z0-9 .-]{2,})$/i,/\bfor\s+([a-z][a-z0-9 .-]{2,})$/i];
+  for(const re of cues){const m=t.match(re);if(!m)continue;let phrase=norm(m[1]);if(/^(the|a|an)?\s*(department|unit|plant|store|asset|portfolio|line|airport|city|record)\s+(with|having|whose)\b/.test(phrase))continue;phrase=phrase.replace(/\b(the|which|what|how|many|airport|airports|city|cities|unit|units|plant|plants|store|stores|asset|assets|portfolio|portfolios|department|departments|line|lines|record|records|with|having|whose)\b/g,' ').replace(/\b\d+(?:\.\d+)?\b/g,' ').replace(/\s+/g,' ').trim();if(!phrase||/^(there|available|all|strong|watch|stable|positive|low|high|medium)$/.test(phrase))continue;if(!rows.some(r=>norm(r[ENTITY_IDX])===phrase||phrase.includes(norm(r[ENTITY_IDX]))))return `No ${esc(ENTITY_LABEL.toLowerCase())} matching <b>${esc(phrase)}</b> exists in this synthetic dataset, so I won't invent a value.`;}
+  return null;
+}
+function specificLookup(t,rows){
+  const ent=entityMention(t,rows);if(!ent)return null;
+  const ms=metricsMentioned(t);
+  if(ms.length===1){const m=ms[0],v=num(ent[m.i]);if(v!==null)return `<b>${esc(m.label)} for ${esc(ent[ENTITY_IDX])}:</b> <b>${fmt(v)}</b>.`}
+  if(/\b(status|health|signal|condition)\b/.test(t)&&STATUS_IDX>=0)return `<b>${esc(ENTITY_LABEL)}:</b> ${esc(ent[ENTITY_IDX])} · <b>${esc(DATA.columns[STATUS_IDX])}:</b> ${esc(ent[STATUS_IDX])}.`;
+  if(/\b(details?|metrics?|performance|profile|summary)\b/.test(t))return `<b>${esc(ent[ENTITY_IDX])}</b> — ${summary(ent)}${STATUS_IDX>=0?` · ${esc(DATA.columns[STATUS_IDX])} <b>${esc(ent[STATUS_IDX])}</b>`:''}.`;
+  return null;
+}
+function aggregateQuery(t,rows){
+  const m=metricFor(t);if(!m)return null;
+  if(/\baverage|avg|mean\b/.test(t))return `<b>Average ${esc(m.label)}:</b> <b>${fmt(avg(m,rows))}</b>.`;
+  if(/\btotal|sum|combined|in total\b/.test(t))return `<b>Total ${esc(m.label)}:</b> <b>${fmt(allNumeric(m,rows).reduce((a,b)=>a+b,0))}</b>.`;
+  return null;
+}
+function relationQuery(t,rows){
+  const ms=metricsMentioned(t);if(!ms.length)return null;
+  const ent=entityMention(t,rows);if(ent&&ms.length>=2)return `<b>${esc(ent[ENTITY_IDX])}</b> — ${ms.map(m=>`${esc(m.label)} <b>${fmt(num(ent[m.i]))}</b>`).join(' · ')}.`;
+  return null;
+}
+function riskAnalysis(rows){const r=ranked(rows),top=r[0];if(!top)return 'No matching synthetic records are available.';return `<b>Risk view:</b> <b>${esc(top[ENTITY_IDX])}</b> is the strongest visible concern. ${summary(top)}.<br><br>These are data-visible operational signals only; the synthetic dataset does not establish root cause or live production risk.`}
+function managementAnalysis(rows,leadership=false){const r=ranked(rows),top=r[0];if(!top)return 'No matching synthetic records are available.';return leadership?`<b>Leadership view:</b> the primary strategic concern is <b>${esc(top[ENTITY_IDX])}</b>, based on flagged status and adverse metric deviation. ${summary(top)}.<br><br>Validate the underlying drivers, exposure and persistence before taking operational action.`:`<b>Management focus:</b> review <b>${esc(top[ENTITY_IDX])}</b> first. ${summary(top)}.<br><br>Next, investigate the metric drivers and confirm whether the signal is persistent or isolated.`}
+function weaknessAnalysis(rows){const items=[];for(const m of METRICS){const w=weakest(m,rows);if(w)items.push(`<b>${esc(m.label)}</b>: ${esc(w[ENTITY_IDX])} at <b>${fmt(num(w[m.i]))}</b>`)}return `<b>Visible weaknesses:</b><br>${items.slice(0,5).map(x=>'• '+x).join('<br>')}<br><br>These are relative performance gaps in the synthetic dataset, not causal findings.`}
+function impactAnalysis(rows){const items=METRICS.map(m=>{const w=weakest(m,rows),a=avg(m,rows);return w&&a!==null?{m,w,a,g:Math.abs(num(w[m.i])-a)}:null}).filter(Boolean).sort((a,b)=>b.g-a.g).slice(0,3);return `<b>Factors that could impact operational performance:</b><br>${items.map(x=>`• ${esc(x.m.label)} — ${esc(x.w[ENTITY_IDX])} shows the largest visible deviation from the dataset average at <b>${fmt(num(x.w[x.m.i]))}</b> vs average <b>${fmt(x.a)}</b>.`).join('<br>')}<br><br>No causal conclusion is implied.`}
+function executiveSummary(rows){const r=ranked(rows),top=r[0];return `<b>Executive summary — ${esc(DATA.name)}:</b><br>• Strongest visible concern: <b>${esc(top?.[ENTITY_IDX]||'not established')}</b>.<br>• ${METRICS.slice(0,4).map(m=>`${esc(m.label)} avg <b>${fmt(avg(m,rows))}</b>`).join(' · ')}.<br>• Management implication: validate the most adverse visible signal before broader intervention.<br><br><i>All conclusions are based only on synthetic demonstration data.</i>`}
+function answerWhy(t,rows){const m=metricFor(t);if(!m)return null;const r=numericExtreme(m,rows,true);if(!r)return null;const bits=[`<b>${esc(m.label)} is highest at ${fmt(num(r[m.i]))}</b> for <b>${esc(r[ENTITY_IDX])}</b>.`];const other=METRICS.filter(x=>x.i!==m.i).slice(0,3);for(const x of other){const v=num(r[x.i]);if(v!==null)bits.push(`${esc(x.label)} ${fmt(v)}`)}return `The synthetic dataset does not establish a causal “why”. ${bits.join(' ')} These are visible operating signals only; a real root-cause analysis would require additional operational drivers.`}
+function trendAnswer(){if(!DATA.trends?.length)return null;let peak=DATA.trends[0];for(const p of DATA.trends)if(num(p[1])>num(peak[1]))peak=p;return `The indexed trend moves from <b>${esc(DATA.trends[0][1])}</b> at <b>${esc(DATA.trends[0][0])}</b> to a peak of <b>${esc(peak[1])}</b> at <b>${esc(peak[0])}</b>, ending at <b>${esc(DATA.trends.at(-1)[1])}</b>.`}
+function mixAnswer(){return DATA.mix?.length?'<b>Synthetic mix:</b> '+DATA.mix.map(x=>`${esc(x[0])} <b>${esc(x[1])}%</b>`).join(' · ')+'.':null}
+function compareAnswer(t,rows){const ents=rows.filter(r=>t.includes(norm(r[ENTITY_IDX])));if(ents.length>=2)return `<b>Comparison:</b><br>${ents.slice(0,4).map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${summary(r)}${STATUS_IDX>=0?` · ${esc(DATA.columns[STATUS_IDX])} ${esc(r[STATUS_IDX])}`:''}`).join('<br>')}`;return `Name two ${esc(CONFIG.entity||ENTITY_LABEL)}s from the table and I will compare their available metrics.`}
+function definitionAnswer(t,rows){const m=metricFor(t);if(m){const vals=allNumeric(m,rows);return `<b>${esc(m.label)}</b> is a field in this ${esc(DATA.name)} synthetic dataset. Available values range from <b>${fmt(Math.min(...vals))}</b> to <b>${fmt(Math.max(...vals))}</b>.`}const c=categoryColumnFor(t);if(c)return `<b>${esc(c.label)}</b> is a categorical field. Available values are ${distinctValues(c.i,rows).map(esc).join(', ')}.`;return null}
 function ask(q){const box=document.getElementById('answer');if(!box)return;const raw=(q!==undefined?q:(document.getElementById('question')?.value||'')).trim();if(!raw){box.innerHTML='Please enter a business question.';return}const t=norm(raw),rows=DATA.rows;let answer='';
-const executive=(/\b(ceo|chief executive|executive|c[- ]suite|board|leadership)\b/.test(t)&&/\b(summary|overview|assessment|briefing|readout|view|perspective)\b/.test(t))||/\b(executive|management|leadership|board|ceo)[- ]?(level)?\s+summary\b/.test(t);
-const management=/\bmanagement\b.*\b(worry|worried|concern|concerned|focus|attention)\b|\bwhat\s+should\s+management\b.*\b(worry|concern|focus|watch|monitor)\b/.test(t);
-const leadership=/\b(leadership|executives?|the ceo|the board)\b.*\b(worry|concern|focus|attention)\b/.test(t);
-const risk=/\brisk(?:s)?\b|\bconcern(?:s)?\b|\bworry\b|\bworried\b|\bwhat could go wrong\b|\bpotential impact\b|\bcould impact\b|\bmay impact\b|\bmight impact\b/.test(t);
-const visibleRisk=/\brisk(?:s)?\s+(?:are\s+)?(?:visible|present|apparent|identified)\b/.test(t);
-const operationalRisk=/\boperational risk(?:s)?\b|\boperational\s+(?:concern|concerns)\b/.test(t);
-const weakness=/\bweakness(?:es)?\b|\bweak areas?\b|\bperformance gaps?\b/.test(t);
-const impact=/\bcould impact operational performance\b|\bimpact operational performance\b|\bfactors? .*\bimpact\b.*\bperformance\b/.test(t);
-const trend=/\btrend|trajectory|pattern over time|over time|peak (hour|period)|improving|declining|increasing|decreasing\b/.test(t);
-const mix=/\bmix|composition|distribution|share\b/.test(t);
-const anomaly=/\banomal(?:y|ies)|outlier|unusual|abnormal|deviation\b/.test(t);
-const compare=/\bcompare\b|\bversus\b|\bvs\b|\bbetween\b/.test(t);
-const rankQ=/\b(which|who)\b.*\b(highest|lowest|best|strongest|weakest|worst|most|least)\b|\b(highest|lowest|best|strongest|weakest|worst)\b/.test(t);
-const why=/\bwhy\b|\bdriving\b|\bdriver\b|\bcause\b/.test(t);
-const focus=/\bfocus|investigate|priority|prioritize|attention|what should we optimize|needs attention first\b/.test(t);
-const def=/\b(what is|what does|define|meaning of)\b/.test(t);
-const biggestProblem=/\b(biggest|main|primary|most serious)\b.*\b(problem|issue|concern)\b|\bwhat is the biggest problem\b|\bmain problem\b/.test(t);
-const categoryRevenue=/\b(category|categories)\b.*\b(revenue|sales)\b/.test(t);
-const growthSegment=/\bgrowing fastest\b|\bfastest growing\b|\bgrowth\b.*\bsegment\b/.test(t);
-if(executive)answer=executiveSummary(rows);
-else if(leadership)answer=managementAnalysis(rows,true);
-else if(management)answer=managementAnalysis(rows,false);
-else if(biggestProblem)answer=managementAnalysis(rows,false);
-else if(growthSegment){if(DATA.trends?.length)answer=`The available synthetic dataset shows an overall trend from <b>${esc(DATA.trends[0][1])}</b> to <b>${esc(DATA.trends.at(-1)[1])}</b>, but it does not contain segment-level growth by portfolio/unit, so I won't attribute the growth to a specific segment.`;else answer='The available synthetic dataset does not contain segment-level growth data.'}
-else if(categoryRevenue){if(DATA.mix?.length){const mx=DATA.mix.reduce((a,b)=>num(b[1])>num(a[1])?b:a);answer=`The synthetic dataset does not contain category-level revenue, so I cannot claim which category drives revenue. The largest available category mix is <b>${esc(mx[0])}</b> at <b>${esc(mx[1])}%</b>.`; }else answer='The available synthetic dataset does not contain category-level revenue.'}
-else if(weakness)answer=weaknessAnalysis(rows);
-else if(impact)answer=impactAnalysis(rows);
-else if(visibleRisk||operationalRisk||risk)answer=riskAnalysis(rows);
-else if(anomaly){const lines=[];for(const m of METRICS){const a=avg(m,rows),vals=allNumeric(m,rows),sd=Math.sqrt(vals.reduce((s,v)=>s+(v-a)*(v-a),0)/vals.length)||1;rows.forEach(r=>{const v=num(r[m.i]);if(v!==null&&Math.abs(v-a)>1.25*sd)lines.push(`${esc(r[0])} — ${esc(m.label)} ${fmt(v)} vs avg ${fmt(a)}`)})}answer=lines.length?'<b>Visible anomalies:</b><br>• '+lines.slice(0,6).join('<br>• '):'No strong statistical outlier is visible in the available synthetic metrics.'}
-else if(compare){const ents=rows.filter(r=>t.includes(norm(r[0])));answer=ents.length>=2?`<b>Comparison:</b><br>• ${esc(ents[0][0])} — ${summary(ents[0])}<br>• ${esc(ents[1][0])} — ${summary(ents[1])}`:`I can compare the listed ${esc(DATA.name)} records. Name two ${esc(CONFIG.entity)}s and I will compare their available metrics.`}
-else if(rankQ){const m=metricFor(t);if(m){const r=/lowest|weakest|worst|least/.test(t)?weakest(m,rows):strongest(m,rows);answer=r?`<b>${esc(m.label)} ranking:</b> <b>${esc(r[0])}</b> at <b>${fmt(num(r[m.i]))}</b>. ${summary(r)}.`:''}}
-else if(trend&&DATA.trends?.length){const p=DATA.trends.reduce((a,b)=>num(b[1])>num(a[1])?b:a);answer=`The indexed trend moves from <b>${esc(DATA.trends[0][1])}</b> at <b>${esc(DATA.trends[0][0])}</b> to a peak of <b>${esc(p[1])}</b> at <b>${esc(p[0])}</b>, ending at <b>${esc(DATA.trends.at(-1)[1])}</b>.`}
-else if(mix&&DATA.mix?.length)answer='<b>Synthetic mix:</b> '+DATA.mix.map(x=>`${esc(x[0])} <b>${esc(x[1])}%</b>`).join(' · ')+'.';
-else if(def){const m=metricFor(t);if(m)answer=`<b>${esc(m.label)}</b> is a field in this ${esc(DATA.name)} synthetic dataset. Available values range from <b>${fmt(Math.min(...allNumeric(m,rows)))}</b> to <b>${fmt(Math.max(...allNumeric(m,rows)))}</b>.`}
-else if(focus||why){const r=ranked(rows)[0];answer=`I would review <b>${esc(r[0])}</b> first because it has the strongest available synthetic signal for this question.<br>${summary(r)}.`}
-else {const m=metricFor(t);if(m){const r=strongest(m,rows);answer=`<b>${esc(m.label)}:</b> ${r?`${esc(r[0])} is the leading visible value at <b>${fmt(num(r[m.i]))}</b>.`:'available in the dataset.'}`}else answer=`I couldn't map that question confidently to the available ${esc(DATA.name)} synthetic data, so I won't guess. I can answer natural-language questions about ${METRICS.map(x=>esc(x.label)).join(', ')}, rankings, comparisons, trends, risks, weaknesses, anomalies and executive priorities.`}
-box.innerHTML=answer;}
+ const executive=(/\b(ceo|chief executive|executive|c suite|board|leadership)\b/.test(t)&&/\b(summary|overview|assessment|briefing|readout|view|perspective)\b/.test(t))||/\b(executive|management|leadership|board|ceo)[- ]?(level)?\s+summary\b/.test(t);
+ const management=/\bmanagement\b.*\b(worry|worried|concern|concerned|focus|attention)\b|\bwhat\s+should\s+management\b.*\b(worry|concern|focus|watch|monitor)\b/.test(t);
+ const leadership=/\b(leadership|executives?|the ceo|the board)\b.*\b(worry|concern|focus|attention)\b/.test(t);
+ const risk=/\brisk(?:s)?\b|\bconcern(?:s)?\b|\bworry\b|\bworried\b|\bwhat could go wrong\b|\bpotential impact\b|\bcould impact\b|\bmay impact\b|\bmight impact\b/.test(t);
+ const weakness=/\bweakness(?:es)?\b|\bweak areas?\b|\bperformance gaps?\b/.test(t);
+ const impact=/\b(could|may|might) impact\b|\bfactors?.*\bimpact\b.*\bperformance\b/.test(t);
+ const trend=/\btrend|trajectory|pattern over time|over time|peak (hour|period)|improving|declining|increasing|decreasing\b/.test(t);
+ const mix=/\bmix|composition|distribution|share\b/.test(t);
+ const anomaly=/\banomal(?:y|ies)|outlier|unusual|abnormal|deviation\b/.test(t);
+ const compare=/\bcompare\b|\bversus\b|\bvs\b|\bbetween\b/.test(t);
+ const rankQ=/\b(which|who)\b.*\b(highest|lowest|best|strongest|weakest|worst|most|least|more|greater|largest|smallest|maximum|minimum|top)\b|\b(highest|lowest|best|strongest|weakest|worst|largest|smallest|maximum|minimum)\b/.test(t);
+ const why=/\bwhy\b|\bdriving\b|\bdriver\b|\bcause\b/.test(t);
+ const focus=/\bfocus|investigate|priority|prioritize|attention|what should we optimize|needs attention first\b/.test(t);
+ const def=/\b(what is|what does|define|meaning of)\b/.test(t);
+ const biggestProblem=/\b(biggest|main|primary|most serious)\b.*\b(problem|issue|concern)\b|\bwhat is the biggest problem\b|\bmain problem\b/.test(t);
+ const unknown=unknownEntity(t,rows);
+ const filtered=filterByConditions(t,rows);
+ const ms=metricsMentioned(t);
+ const ent=entityMention(t,rows);
+ if(executive)answer=executiveSummary(rows);
+ else if(leadership)answer=managementAnalysis(rows,true);
+ else if(management||biggestProblem)answer=managementAnalysis(rows,false);
+ else if(unknown)answer=unknown;
+ else {
+   const count=countQuery(t,filtered?.rows||rows);
+   const entityWise=entityWiseList(t,filtered?.rows||rows);
+   const aggregate=aggregateQuery(t,filtered?.rows||rows);
+   const listed=listAll(t,filtered?.rows||rows);
+   const relation=relationQuery(t,filtered?.rows||rows);
+   const specific=specificLookup(t,filtered?.rows||rows);
+   if(count)answer=count;
+   else if(why){const cat=requestedCategoryColumn(t), cm=categoryMatch(t);if(cat&&cm?.value){const rs=rows.filter(r=>norm(r[cat.i])===norm(cm.value));answer=`The synthetic dataset does not establish a causal reason for <b>${esc(cat.label)} = ${esc(cm.value)}</b>. The visible matching record${rs.length===1?' is':'s are'}: ${rs.map(r=>`<b>${esc(r[ENTITY_IDX])}</b>`).join(', ')}.`;}else answer=answerWhy(t,rows)||`The available synthetic dataset does not contain causal-driver fields for that question, so I won't invent a reason.`;}
+   else if(filtered){
+     const rs=filtered.rows, condMetric=filtered.metric;
+     const targetCat=requestedCategoryColumn(t);
+     const targets=ms.filter(m=>!condMetric||m.i!==condMetric.i).filter(m=>!targetCat||norm(m.label)!==norm(targetCat.label));
+     const asksValue=/\b(what|which|show|tell|give|how many|number of|count of)\b/.test(t)&&targets.length>0;
+     if(targetCat&&condMetric&&rs.length){answer=rs.length===1?`<b>${esc(targetCat.label)} for ${esc(rs[0][ENTITY_IDX])}:</b> <b>${esc(rs[0][targetCat.i])}</b>.`:`<b>${esc(targetCat.label)} for matching ${esc(ENTITY_LABEL.toLowerCase())}s:</b><br>${rs.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${esc(r[targetCat.i])}`).join('<br>')}`;}
+     else if(asksValue&&rs.length){
+       const m=targets[0];
+       if(/\bhow many\b/.test(t)&&m){
+         const total=allNumeric(m,rs).reduce((a,b)=>a+b,0);
+         answer=`<b>Total ${esc(m.label)} for matching ${esc(ENTITY_LABEL.toLowerCase())}s:</b> <b>${fmt(total)}</b> across <b>${rs.length}</b> ${esc(ENTITY_LABEL.toLowerCase())}s.`;
+       } else {
+         answer=rs.length===1?`<b>${esc(m.label)} for ${esc(rs[0][ENTITY_IDX])}:</b> <b>${fmt(num(rs[0][m.i]))}</b>.`:`<b>${esc(m.label)} for matching ${esc(ENTITY_LABEL.toLowerCase())}s:</b><br>${rs.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${fmt(num(r[m.i]))}`).join('<br>')}`;
+       }
+     }
+     else answer=`<b>${esc(condMetric?.label||filtered.label)}${condMetric?` ${esc(filtered.operator||'=')} ${fmt(filtered.target)}`:` = ${esc(filtered.value)}`}:</b> ${rs.map(r=>`<b>${esc(r[ENTITY_IDX])}</b>`).join(', ')}.`;
+   }
+   else if(listed)answer=listed;
+   else if(entityWise)answer=entityWise;
+   else if(relation)answer=relation;
+   else if(specific)answer=specific;
+   else if(rankQ){const m=metricFor(t);if(m){const r=rankingChoice(t,m,rows);answer=r?`<b>${esc(r[ENTITY_IDX])}</b> — <b>${fmt(num(r[m.i]))}</b> ${esc(m.label)}.`:'No matching numeric values are available.'}}
+   else if(aggregate)answer=aggregate;
+   else if(weakness)answer=weaknessAnalysis(rows);
+   else if(impact)answer=impactAnalysis(rows);
+   else if(risk){const requested=requestedCategoryColumn(t);if(/\b(?:what are|what is|which|show|tell|give).*\b(?:risk|status|signal|health|condition|type|category|kind)\b/.test(t)&&!requested){answer=`The ${esc(DATA.name)} synthetic dataset does not contain a categorical field named <b>Risk</b>. Available categorical fields are ${CATEGORICAL_COLS.map(c=>`<b>${esc(c.label)}</b>`).join(', ')}.`;}else answer=riskAnalysis(rows);}
+   else if(anomaly){const lines=[];for(const m of METRICS){const a=avg(m,rows),vals=allNumeric(m,rows),sd=Math.sqrt(vals.reduce((s,v)=>s+(v-a)*(v-a),0)/vals.length)||1;rows.forEach(r=>{const v=num(r[m.i]);if(v!==null&&Math.abs(v-a)>1.25*sd)lines.push(`${esc(r[ENTITY_IDX])} — ${esc(m.label)} ${fmt(v)} vs avg ${fmt(a)}`)})}answer=lines.length?'<b>Visible anomalies:</b><br>• '+lines.slice(0,8).join('<br>• '):'No strong statistical outlier is visible in the available synthetic metrics.'}
+   else if(compare)answer=compareAnswer(t,rows);
+   else if(trend&&DATA.trends?.length)answer=trendAnswer();
+   else if(mix&&DATA.mix?.length)answer=mixAnswer();
+   else if(def)answer=definitionAnswer(t,rows);
+   else if(focus){const r=ranked(rows)[0];answer=`I would review <b>${esc(r[ENTITY_IDX])}</b> first because it has the strongest available synthetic signal for this question.<br>${summary(r)}.`}
+   else if(ent&&ms.length===0&&/\b(what|tell|show|give)\b/.test(t))answer=`<b>${esc(ent[ENTITY_IDX])}</b> — ${summary(ent)}${STATUS_IDX>=0?` · ${esc(DATA.columns[STATUS_IDX])} <b>${esc(ent[STATUS_IDX])}</b>`:''}.`;
+   else {const m=metricFor(t);if(m){const r=strongest(m,rows);answer=`<b>${esc(m.label)}:</b> ${r?`${esc(r[ENTITY_IDX])} is the leading visible value at <b>${fmt(num(r[m.i]))}</b>.`:'available in the dataset.'}`}else answer=`I couldn't map that question confidently to the available ${esc(DATA.name)} synthetic data, so I won't guess. I can answer natural-language questions about ${DATA.columns.map(x=>esc(x)).join(', ')}, counts, filters, direct lookups, rankings, comparisons, aggregates, trends, risks, weaknesses, anomalies and executive priorities.`}
+ }
+ box.innerHTML=answer;
+}
+
 function init(){charts();render();document.querySelectorAll('.q').forEach(b=>{b.onclick=null;b.addEventListener('click',()=>ask(b.textContent||''))});const qi=document.getElementById('question');if(qi)qi.onkeydown=e=>{if(e.key==='Enter')ask()};window.onresize=charts}
 init();
+
+
+
+
+
+
 </script>
 </body></html>
