@@ -122,17 +122,54 @@ function entityWiseRequested(t){
     || /\b(?:for|across)\s+(?:each|all|every)\s+(?:department|departments|unit|units)\b/.test(t)
     || /\b(?:department|departments|unit|units)\b/.test(t) && /\b(?:each|all|every)\b/.test(t);
 }
+function explicitEntityWiseMetric(t){
+  // Handles natural shorthand such as:
+  // "department patients wise", "department occupancy wise",
+  // "department avg wise", "department los wise", "department readmit wise".
+  const n=norm(t);
+  const aliases=[
+    {keys:['patients','patient','visits','volume','admissions','admission','patient volume'], re:/\bpatients?\b|\bvisits?\b|\bvolume\b|\badmissions?\b/},
+    {keys:['occupancy','occupancy rate','bed occupancy','bed utilization','beds'], re:/\boccupancy\b|\bbed occupancy\b|\bbed utilization\b|\bbeds?\b/},
+    {keys:['avg los','average los','length of stay','los','stay','avg'], re:/\bavg\b|\baverage\b|\blos\b|\blength of stay\b|\bstay\b/},
+    {keys:['readmit','readmission','readmission rate','readmit rate'], re:/\breadmit\b|\breadmission\b/}
+  ];
+  for(const a of aliases){
+    if(a.re.test(n)){
+      const m=METRICS.find(x=>a.keys.some(k=>norm(x.label)===norm(k)) || a.keys.some(k=>x.aliases.some(v=>norm(v)===norm(k))));
+      if(m)return m;
+      // Match the metric through the configured aliases.
+      for(const x of METRICS){
+        if(x.aliases.some(v=>a.keys.includes(norm(v))) || a.keys.some(k=>x.aliases.some(v=>norm(v).includes(norm(k))||norm(k).includes(norm(v))))) return x;
+      }
+    }
+  }
+  return null;
+}
+function explicitEntityWiseCategory(t){
+  const n=norm(t);
+  if(/\bstatus\b|\bhealth\b|\bsignal\b|\bcondition\b|\bstate\b/.test(n))return CATEGORICAL_COLS.find(c=>/status|health|signal|condition|state/i.test(c.label))||null;
+  if(/\btype\b|\bcategory\b|\bkind\b/.test(n))return CATEGORICAL_COLS.find(c=>/type|category|kind/i.test(c.label))||null;
+  return null;
+}
 function entityWiseList(t,rows){
   if(!entityWiseRequested(t))return null;
-  const ms=metricsMentioned(t);
-  if(ms.length===1){
-    const m=ms[0];
+
+  const m=explicitEntityWiseMetric(t);
+  if(m){
     return `<b>${esc(m.label)} by ${esc(ENTITY_LABEL.toLowerCase())}:</b><br>${rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${fmt(num(r[m.i]))}`).join('<br>')}`;
   }
-  const cat=requestedCategoryColumn(t)||categoryColumnFor(t);
+
+  const cat=explicitEntityWiseCategory(t)||requestedCategoryColumn(t)||categoryColumnFor(t);
   if(cat){
     return `<b>${esc(cat.label)} by ${esc(ENTITY_LABEL.toLowerCase())}:</b><br>${rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${esc(r[cat.i])}`).join('<br>')}`;
   }
+
+  const ms=metricsMentioned(t);
+  if(ms.length===1){
+    const m2=ms[0];
+    return `<b>${esc(m2.label)} by ${esc(ENTITY_LABEL.toLowerCase())}:</b><br>${rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${fmt(num(r[m2.i]))}`).join('<br>')}`;
+  }
+
   return `<b>${esc(ENTITY_LABEL)}-wise view:</b><br>${rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${summary(r)}`).join('<br>')}`;
 }
 function countQuery(t,rows){
@@ -202,6 +239,34 @@ function mixAnswer(){return DATA.mix?.length?'<b>Synthetic mix:</b> '+DATA.mix.m
 function compareAnswer(t,rows){const ents=rows.filter(r=>t.includes(norm(r[ENTITY_IDX])));if(ents.length>=2)return `<b>Comparison:</b><br>${ents.slice(0,4).map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${summary(r)}${STATUS_IDX>=0?` · ${esc(DATA.columns[STATUS_IDX])} ${esc(r[STATUS_IDX])}`:''}`).join('<br>')}`;return `Name two ${esc(CONFIG.entity||ENTITY_LABEL)}s from the table and I will compare their available metrics.`}
 function definitionAnswer(t,rows){const m=metricFor(t);if(m){const vals=allNumeric(m,rows);return `<b>${esc(m.label)}</b> is a field in this ${esc(DATA.name)} synthetic dataset. Available values range from <b>${fmt(Math.min(...vals))}</b> to <b>${fmt(Math.max(...vals))}</b>.`}const c=categoryColumnFor(t);if(c)return `<b>${esc(c.label)}</b> is a categorical field. Available values are ${distinctValues(c.i,rows).map(esc).join(', ')}.`;return null}
 function ask(q){const box=document.getElementById('answer');if(!box)return;const raw=(q!==undefined?q:(document.getElementById('question')?.value||'')).trim();if(!raw){box.innerHTML='Please enter a business question.';return}const t=norm(raw),rows=DATA.rows;let answer='';
+ // Deterministic department-wise list handling: when the user asks for a metric by department,
+ // always show every selected department rather than returning only the leading value.
+ const deptWiseMetric = /\b(?:department|departments|unit|units)\s+(?:patients?|occupancy|occupancy rate|bed occupancy|bed utilization|avg|average|los|length of stay|stay|readmit|readmission|readmission rate|readmit rate)\s+(?:wise|by)\b/.test(t)
+   || /\b(?:patients?|occupancy|occupancy rate|bed occupancy|bed utilization|avg|average|los|length of stay|stay|readmit|readmission|readmission rate|readmit rate)\s+(?:wise|by)\s+(?:department|departments|unit|units)\b/.test(t);
+ const deptWiseCategory = /\b(?:department|departments|unit|units)\s+(?:status|statuses|health|signal|signals|condition|conditions|state|states)\s+(?:wise|by)\b/.test(t)
+   || /\b(?:status|statuses|health|signal|signals|condition|conditions|state|states)\s+(?:wise|by)\s+(?:department|departments|unit|units)\b/.test(t);
+ if(deptWiseCategory){
+   const cat = explicitEntityWiseCategory(t) || CATEGORICAL_COLS.find(c=>/status|health|signal|condition|state/i.test(c.label));
+   if(cat){
+     answer=`<b>${esc(cat.label)} by department:</b><br>`+
+       rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${esc(r[cat.i])}`).join('<br>');
+   } else {
+     answer=`<b>Department-wise view:</b><br>`+rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${summary(r)}`).join('<br>');
+   }
+   box.innerHTML=answer;
+   return;
+ }
+ if(deptWiseMetric){
+   const m=explicitEntityWiseMetric(t);
+   if(m){
+     answer=`<b>${esc(m.label)} by department:</b><br>`+
+       rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${fmt(num(r[m.i]))}${/%$/.test(m.label)?'%':''}`).join('<br>');
+   } else {
+     answer=`<b>Department-wise view:</b><br>`+rows.map(r=>`• <b>${esc(r[ENTITY_IDX])}</b> — ${summary(r)}`).join('<br>');
+   }
+   box.innerHTML=answer;
+   return;
+ }
  const executive=(/\b(ceo|chief executive|executive|c suite|board|leadership)\b/.test(t)&&/\b(summary|overview|assessment|briefing|readout|view|perspective)\b/.test(t))||/\b(executive|management|leadership|board|ceo)[- ]?(level)?\s+summary\b/.test(t);
  const management=/\bmanagement\b.*\b(worry|worried|concern|concerned|focus|attention)\b|\bwhat\s+should\s+management\b.*\b(worry|concern|focus|watch|monitor)\b/.test(t);
  const leadership=/\b(leadership|executives?|the ceo|the board)\b.*\b(worry|concern|focus|attention)\b/.test(t);
@@ -233,6 +298,7 @@ function ask(q){const box=document.getElementById('answer');if(!box)return;const
    const relation=relationQuery(t,filtered?.rows||rows);
    const specific=specificLookup(t,filtered?.rows||rows);
    if(count)answer=count;
+   else if(entityWise&&!filtered)answer=entityWise;
    else if(why){const cat=requestedCategoryColumn(t), cm=categoryMatch(t);if(cat&&cm?.value){const rs=rows.filter(r=>norm(r[cat.i])===norm(cm.value));answer=`The synthetic dataset does not establish a causal reason for <b>${esc(cat.label)} = ${esc(cm.value)}</b>. The visible matching record${rs.length===1?' is':'s are'}: ${rs.map(r=>`<b>${esc(r[ENTITY_IDX])}</b>`).join(', ')}.`;}else answer=answerWhy(t,rows)||`The available synthetic dataset does not contain causal-driver fields for that question, so I won't invent a reason.`;}
    else if(filtered){
      const rs=filtered.rows, condMetric=filtered.metric;
@@ -270,6 +336,155 @@ function ask(q){const box=document.getElementById('answer');if(!box)return;const
    else {const m=metricFor(t);if(m){const r=strongest(m,rows);answer=`<b>${esc(m.label)}:</b> ${r?`${esc(r[ENTITY_IDX])} is the leading visible value at <b>${fmt(num(r[m.i]))}</b>.`:'available in the dataset.'}`}else answer=`I couldn't map that question confidently to the available ${esc(DATA.name)} synthetic data, so I won't guess. I can answer natural-language questions about ${DATA.columns.map(x=>esc(x)).join(', ')}, counts, filters, direct lookups, rankings, comparisons, aggregates, trends, risks, weaknesses, anomalies and executive priorities.`}
  }
  box.innerHTML=answer;
+}
+
+
+function drawCanvasSetup(canvas){
+  if(!canvas)return null;
+  const rect=canvas.getBoundingClientRect();
+  const dpr=window.devicePixelRatio||1;
+  const w=Math.max(320,Math.floor(rect.width));
+  const h=Math.max(220,Math.floor(rect.height||260));
+  canvas.width=Math.floor(w*dpr);
+  canvas.height=Math.floor(h*dpr);
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  return {ctx,w,h};
+}
+function charts(){
+  const trendCanvas=document.getElementById('trend');
+  const mixCanvas=document.getElementById('mix');
+
+  if(trendCanvas && DATA.trends?.length){
+    const s=drawCanvasSetup(trendCanvas);
+    if(s){
+      const {ctx,w,h}=s;
+      const pad={l:42,r:18,t:18,b:34};
+      const vals=DATA.trends.map(x=>Number(x[1])).filter(Number.isFinite);
+      const min=Math.min(...vals), max=Math.max(...vals);
+      const span=Math.max(1,max-min);
+      const x=i=>pad.l+(i*Math.max(1,w-pad.l-pad.r)/Math.max(1,DATA.trends.length-1));
+      const y=v=>pad.t+(max-v)*((h-pad.t-pad.b)/span);
+
+      ctx.font='12px Arial';
+      ctx.lineWidth=1;
+      ctx.strokeStyle='#dbe3ef';
+      ctx.fillStyle='#68758a';
+      for(let i=0;i<5;i++){
+        const v=min+(span*i/4);
+        const yy=y(v);
+        ctx.beginPath();ctx.moveTo(pad.l,yy);ctx.lineTo(w-pad.r,yy);ctx.stroke();
+        ctx.fillText(String(Math.round(v)),6,yy+4);
+      }
+
+      ctx.strokeStyle='#142653';
+      ctx.lineWidth=3;
+      ctx.beginPath();
+      DATA.trends.forEach((p,i)=>{
+        const yy=y(Number(p[1]));
+        if(i===0)ctx.moveTo(x(i),yy);else ctx.lineTo(x(i),yy);
+      });
+      ctx.stroke();
+
+      DATA.trends.forEach((p,i)=>{
+        const xx=x(i),yy=y(Number(p[1]));
+        ctx.fillStyle='#0d7772';
+        ctx.beginPath();ctx.arc(xx,yy,4.5,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='#42516a';
+        ctx.textAlign='center';
+        ctx.fillText(String(p[0]),xx,h-12);
+        ctx.fillStyle='#142653';
+        ctx.font='700 11px Arial';
+        ctx.fillText(String(p[1]),xx,yy-10);
+        ctx.font='12px Arial';
+      });
+      ctx.textAlign='left';
+    }
+  }
+
+  if(mixCanvas && DATA.mix?.length){
+    const s=drawCanvasSetup(mixCanvas);
+    if(s){
+      const {ctx,w,h}=s;
+      const total=DATA.mix.reduce((a,x)=>a+(Number(x[1])||0),0);
+      const cx=Math.min(w*0.38,120), cy=h/2, radius=Math.min(82,h*0.32);
+      const colors=['#142653','#0d7772','#4d8bb8','#9aa7b8','#7b61a8','#d17b49'];
+      let angle=-Math.PI/2;
+
+      DATA.mix.forEach((item,i)=>{
+        const value=Number(item[1])||0;
+        const slice=total?value/total*Math.PI*2:0;
+        ctx.beginPath();
+        ctx.moveTo(cx,cy);
+        ctx.arc(cx,cy,radius,angle,angle+slice);
+        ctx.closePath();
+        ctx.fillStyle=colors[i%colors.length];
+        ctx.fill();
+        angle+=slice;
+      });
+
+      ctx.beginPath();
+      ctx.arc(cx,cy,radius*0.58,0,Math.PI*2);
+      ctx.fillStyle='#fff';
+      ctx.fill();
+
+      ctx.fillStyle='#142653';
+      ctx.font='700 16px Arial';
+      ctx.textAlign='center';
+      ctx.fillText('100%',cx,cy+5);
+      ctx.textAlign='left';
+
+      const startX=Math.min(w*0.62,190);
+      let ly=42;
+      ctx.font='12px Arial';
+      DATA.mix.forEach((item,i)=>{
+        const value=Number(item[1])||0;
+        ctx.fillStyle=colors[i%colors.length];
+        ctx.fillRect(startX,ly-9,11,11);
+        ctx.fillStyle='#142653';
+        ctx.font='700 12px Arial';
+        ctx.fillText(String(item[0]),startX+18,ly);
+        ctx.fillStyle='#68758a';
+        ctx.font='12px Arial';
+        ctx.fillText(`${value}%`,startX+18,ly+17);
+        ly+=52;
+      });
+    }
+  }
+}
+
+function render(){
+  const tbody=document.getElementById('tbody');
+  if(!tbody)return;
+  const status=(document.getElementById('status')?.value||'All').trim();
+  const unit=(document.getElementById('unit')?.value||'All').trim();
+  const rows=DATA.rows.filter(r=>
+    (status==='All'||r[STATUS_IDX]===status) &&
+    (unit==='All'||r[ENTITY_IDX]===unit)
+  );
+  tbody.innerHTML=rows.map(r=>`<tr>${r.map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join('') ||
+    `<tr><td colspan="${DATA.columns.length}">No matching records.</td></tr>`;
+}
+
+function runAnalysis(){
+  render();
+  const status=document.getElementById('status')?.value||'All';
+  const unit=document.getElementById('unit')?.value||'All';
+  const rows=DATA.rows.filter(r=>
+    (status==='All'||r[STATUS_IDX]===status) &&
+    (unit==='All'||r[ENTITY_IDX]===unit)
+  );
+  const box=document.getElementById('analysis');
+  if(box){
+    if(!rows.length){
+      box.innerHTML='<b>Analysis:</b> No records match the selected filters.';
+    }else{
+      const avgOcc=rows.reduce((s,r)=>s+(Number(r[2])||0),0)/rows.length;
+      const avgRead=rows.reduce((s,r)=>s+(Number(r[4])||0),0)/rows.length;
+      box.innerHTML=`<b>Analysis:</b> ${rows.length} department${rows.length===1?'':'s'} selected. Average occupancy is <b>${avgOcc.toFixed(1)}%</b> and average readmission is <b>${avgRead.toFixed(1)}%</b>.`;
+    }
+  }
 }
 
 function init(){charts();render();document.querySelectorAll('.q').forEach(b=>{b.onclick=null;b.addEventListener('click',()=>ask(b.textContent||''))});const qi=document.getElementById('question');if(qi)qi.onkeydown=e=>{if(e.key==='Enter')ask()};window.onresize=charts}
